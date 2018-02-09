@@ -27,22 +27,78 @@ along with {Plugin Name}. If not, see {URI to Plugin License}.
 register_activation_hook(__FILE__, 'wprst_activation');
 register_uninstall_hook(__FILE__, 'wprst_uninstall');
 
-add_action('init', 'wprst_init');
-add_action('admin_menu', 'wprst_admin_init');
+add_filter('save_post', 'wprst_save_post', 0, 3);
+add_action('admin_menu', 'wprst_admin_menu');
 
 function wprst_activation() {
-
+    add_option('wprst_rst2html_bin', '/usr/bin/rst2html');
+    add_option('wprst_rst2html_args', '--link-stylesheet --toc-entry-backlinks --initial-header-level=2  --no-doc-title --no-footnote-backlinks --syntax-highlight=short');
 }
 
 function wprst_uninstall() {
-
+    add_option('wprst_rst2html_bin');
+    add_option('wprst_rst2html_args');
 }
 
-function wprst_init() {
-
+function rst_to_html($source) {
+    $bin = get_option('wprst_rst2html_bin', false);
+    $args = get_option('wprst_rst2html_args', false);
+    if (!$bin || !$args) { return; }
+    $cmd = "{$bin} {$args}";
+    $descriptors = array(
+        0 => array('pipe', 'r'),
+        1 => array('pipe', 'w'),
+        2 => array('pipe', 'w')
+    );
+    $proc = proc_open($cmd, $descriptors, $pipes);
+    if (!is_resource($proc)) {
+        return 'Error opening process.';
+    }
+    $stdin = $pipes[0];
+    $stdout = $pipes[1];
+    $stderr = $pipes[2];
+    fwrite($stdin, $source);
+    fflush($stdin);
+    fclose($stdin);
+    fflush($stdout);
+    $content = stream_get_contents($stdout);
+    fclose($stdout);
+    fflush($stderr);
+    $errors = stream_get_contents($stderr);
+    fclose($stderr);
+    $ret = proc_close($proc);
+    if ($ret != 0) {
+        $msg = "Command: {$cmd} <br/>\nExit code: {$ret} <br/>\n{$errors} <br/>\n{$content} <br/>\n";
+        print_r($msg);
+        die();
+    }
+    $content = preg_replace('/(.*)<\/body>.*/ms', '$1', $content);
+    $content = preg_replace('/.*<body>[\n\s]+(.*)/ms', '$1', $content);
+    $content = str_replace('<!-- more -->', '<!--more-->', $content);
+    return $content;
 }
 
-function wprst_admin_init() {
+function wprst_save_post($post_ID, $post, $update){
+    global $wpdb;
+    $post_ID = $post->ID;
+    // Retrieve reST source.
+    $source = $post->post_content;
+    if (get_magic_quotes_gpc()){
+        $source = stripslashes($source);
+    }
+    // Save source as meta.
+    update_post_meta($post_ID, 'post_rst', $source);
+    // Convert rst to html.
+    $content = rst_to_html($source);
+    // Save to the Database
+    $where = array( 'ID' => $post_ID );
+    $wpdb->update($wpdb->posts, array( 'post_content' => $content), $where);
+    clean_post_cache($post_ID);
+    $post = get_post($post_ID);
+}
+
+
+function wprst_admin_menu() {
     add_options_page(
         'reStructuredText',
         'reStructuredText',
